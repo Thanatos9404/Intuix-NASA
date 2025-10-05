@@ -7,7 +7,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
-from model import ExoplanetModel
+from src.model import ExoplanetModel
 
 
 def test_model_initialization():
