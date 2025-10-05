@@ -1,0 +1,56 @@
+data:
+  koi_url: "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=select+*+from+cumulative&format=csv"
+  toi_url: "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=select+*+from+toi&format=csv"
+  k2_url: "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=select+*+from+k2pandc&format=csv"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+
+labels:
+  koi_disposition_col: "koi_pdisposition"
+  toi_disposition_col: "tfopwg_disp"
+  k2_disposition_col: "k2c_disp"
+  confirmed: ["CONFIRMED", "CP"]
+  candidate: ["CANDIDATE", "PC", "APC", "KP"]
+  false_positive: ["FALSE POSITIVE", "FP"]
+
+preprocessing:
+  test_size: 0.2
+  val_size: 0.125
+  missing_threshold: 0.7
+  scaler: "robust"
+
+features:
+  engineering:
+    log_transform: ["koi_period", "koi_duration", "koi_prad"]
+    ratios: true
+    interactions: false
+
+model:
+  algorithm: "lightgbm"
+  cv_folds: 5
+  random_state: 42
+  class_weight: "balanced"
+
+  lgb_params:
+    n_estimators: 500
+    max_depth: 8
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 20
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+
+smote:
+  enabled: true
+  sampling_strategy: "auto"
+  k_neighbors: 5
+
+tuning:
+  enabled: false
+  n_iter: 20
+
+retraining:
+  max_rows: 50000
+  require_confirmation: true
