@@ -123,3 +123,6 @@ Trained models saved to `models/` with:
 ## License
 
 >MIT
+
+## Demo
+[Exoplanet-Detection-ML-System-Yashvardhan-Thanvi-Intuix.pdf](https://github.com/user-attachments/files/22710996/Exoplanet-Detection-ML-System-Yashvardhan-Thanvi-Intuix.pdf)
