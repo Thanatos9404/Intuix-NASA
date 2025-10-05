@@ -12,6 +12,8 @@ from sklearn.metrics import (
 )
 from imblearn.over_sampling import SMOTE
 import yaml
+import shap
+import lightgbm as lgb
 
 from data_loader import load_all_data
 from features import engineer_features, select_features
@@ -24,9 +26,9 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def evaluate_model(model, X, y, label_encoder, config):
-    y_pred = model.predict(X)
-    y_proba = model.predict_proba(X)
+def evaluate_model_from_processed(model, X_processed, y, label_encoder):
+    y_pred = model.predict(X_processed)
+    y_proba = model.predict_proba(X_processed)
 
     metrics = {}
     metrics["classification_report"] = classification_report(
@@ -140,7 +142,6 @@ def main():
         else:
             y_train_fold_res = y_train_fold
 
-        import lightgbm as lgb
         model_fold = lgb.LGBMClassifier(**config["model"]["lgb_params"])
         model_fold.fit(X_train_processed, y_train_fold_res)
 
@@ -155,27 +156,39 @@ def main():
 
     print("\nTraining final model on full train+val set...")
 
-    # Do NOT transform before model.fit. Let model handle transformation internally.
+    # Fit preprocessor and transform training data
+    final_preprocessor = create_preprocessing_pipeline(feature_cols, config)
+    X_train_val_processed = final_preprocessor.fit_transform(X_train_val_df)
+
+    # Apply SMOTE on preprocessed data
     if config["smote"]["enabled"]:
         smote = SMOTE(
             sampling_strategy=config["smote"]["sampling_strategy"],
             k_neighbors=config["smote"]["k_neighbors"],
             random_state=config["model"]["random_state"]
         )
-        X_train_val_res, y_train_val_res = smote.fit_resample(X_train_val_df, y_train_val)
+        X_train_val_res, y_train_val_res = smote.fit_resample(X_train_val_processed, y_train_val)
     else:
-        X_train_val_res, y_train_val_res = X_train_val_df, y_train_val
+        X_train_val_res, y_train_val_res = X_train_val_processed, y_train_val
 
+    # Train final model
+    final_lgb_model = lgb.LGBMClassifier(**config["model"]["lgb_params"])
+    final_lgb_model.fit(X_train_val_res, y_train_val_res)
+
+    # Build ExoplanetModel wrapper
     final_model = ExoplanetModel()
-    final_model.fit(
-        X_train_val_res, y_train_val_res, preprocessor,
-        label_encoder, feature_cols, config["model"]["lgb_params"]
-    )
+    final_model.model = final_lgb_model
+    final_model.preprocessor = final_preprocessor
+    final_model.label_encoder = label_encoder
+    final_model.feature_names = feature_cols
+    final_model.explainer = shap.TreeExplainer(final_model.model)
 
     print("\nEvaluating on test set...")
-    X_test_processed = preprocessor.transform(X_test_df)
+    X_test_processed = final_preprocessor.transform(X_test_df)
 
-    test_metrics = evaluate_model(final_model, X_test_processed, y_test, label_encoder, config)
+    test_metrics = evaluate_model_from_processed(
+        final_lgb_model, X_test_processed, y_test, label_encoder
+    )
 
     print("\nTest Metrics:")
     print(f"Precision: {test_metrics['precision']:.4f}")
@@ -197,7 +210,7 @@ def main():
         timestamp
     )
 
-    y_test_proba = final_model.predict_proba(X_test_processed)
+    y_test_proba = final_lgb_model.predict_proba(X_test_processed)
     plot_roc_curve(y_test, y_test_proba, label_encoder, timestamp)
 
     feature_importance = final_model.get_feature_importance(top_k=20)
