@@ -13,10 +13,10 @@ from sklearn.metrics import (
 from imblearn.over_sampling import SMOTE
 import yaml
 
-from src.data_loader import load_all_data
-from src.features import engineer_features, select_features
-from src.preprocess import create_preprocessing_pipeline, prepare_data
-from src.model import ExoplanetModel
+from data_loader import load_all_data
+from features import engineer_features, select_features
+from preprocess import create_preprocessing_pipeline, prepare_data
+from model import ExoplanetModel
 
 
 def load_config():
@@ -93,15 +93,17 @@ def main():
 
     print("Loading and merging datasets...")
     df = load_all_data(config)
+
     print("\nEngineering features...")
     df = engineer_features(df, config)
+
     print("\nSelecting features...")
     feature_cols = select_features(df, config)
     print(f"Selected {len(feature_cols)} features")
+
     print("\nPreparing data...")
     X_df, y, label_encoder = prepare_data(df, feature_cols, config)
 
-    # Always keep X as a DataFrame so feature names are preserved
     X_train_val_df, X_test_df, y_train_val, y_test = train_test_split(
         X_df, y, test_size=config["preprocessing"]["test_size"],
         stratify=y, random_state=config["model"]["random_state"]
@@ -116,16 +118,18 @@ def main():
         shuffle=True,
         random_state=config["model"]["random_state"]
     )
-    cv_scores = []
 
+    cv_scores = []
     for fold, (train_idx, val_idx) in enumerate(cv.split(X_train_val_df, y_train_val), 1):
         X_train_fold_df = X_train_val_df.iloc[train_idx]
         X_val_fold_df = X_train_val_df.iloc[val_idx]
         y_train_fold = y_train_val[train_idx]
         y_val_fold = y_train_val[val_idx]
+
         preprocessor_fold = create_preprocessing_pipeline(feature_cols, config)
         X_train_processed = preprocessor_fold.fit_transform(X_train_fold_df)
         X_val_processed = preprocessor_fold.transform(X_val_fold_df)
+
         if config["smote"]["enabled"]:
             smote = SMOTE(
                 sampling_strategy=config["smote"]["sampling_strategy"],
@@ -135,62 +139,75 @@ def main():
             X_train_processed, y_train_fold_res = smote.fit_resample(X_train_processed, y_train_fold)
         else:
             y_train_fold_res = y_train_fold
+
         import lightgbm as lgb
         model_fold = lgb.LGBMClassifier(**config["model"]["lgb_params"])
         model_fold.fit(X_train_processed, y_train_fold_res)
+
         val_pred = model_fold.predict(X_val_processed)
         from sklearn.metrics import f1_score
         fold_score = f1_score(y_val_fold, val_pred, average="weighted")
         cv_scores.append(fold_score)
+
         print(f"Fold {fold} F1: {fold_score:.4f}")
 
     print(f"\nCV F1: {np.mean(cv_scores):.4f} (+/- {np.std(cv_scores):.4f})")
+
     print("\nTraining final model on full train+val set...")
-    final_preprocessor = create_preprocessing_pipeline(feature_cols, config)
-    X_train_val_processed = final_preprocessor.fit_transform(X_train_val_df)
-    # Apply SMOTE on both feature matrix AND target and use results for model fitting
+
+    # Do NOT transform before model.fit. Let model handle transformation internally.
     if config["smote"]["enabled"]:
         smote = SMOTE(
             sampling_strategy=config["smote"]["sampling_strategy"],
             k_neighbors=config["smote"]["k_neighbors"],
             random_state=config["model"]["random_state"]
         )
-        X_train_val_processed, y_train_val_res = smote.fit_resample(X_train_val_processed, y_train_val)
+        X_train_val_res, y_train_val_res = smote.fit_resample(X_train_val_df, y_train_val)
     else:
-        y_train_val_res = y_train_val
-    # For feature names with pipeline transform, use column indices
+        X_train_val_res, y_train_val_res = X_train_val_df, y_train_val
+
     final_model = ExoplanetModel()
     final_model.fit(
-        X_train_val_processed, y_train_val_res, final_preprocessor,
+        X_train_val_res, y_train_val_res, preprocessor,
         label_encoder, feature_cols, config["model"]["lgb_params"]
     )
+
     print("\nEvaluating on test set...")
-    # Preprocess test set for evaluation
-    X_test_processed = final_preprocessor.transform(X_test_df)
+    X_test_processed = preprocessor.transform(X_test_df)
+
     test_metrics = evaluate_model(final_model, X_test_processed, y_test, label_encoder, config)
+
     print("\nTest Metrics:")
     print(f"Precision: {test_metrics['precision']:.4f}")
     print(f"Recall: {test_metrics['recall']:.4f}")
     print(f"F1: {test_metrics['f1']:.4f}")
     print(f"ROC-AUC: {test_metrics['roc_auc']:.4f}")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     print("\nSaving model and artifacts...")
     final_model.save("models", timestamp)
+
     with open(f"models/metrics_{timestamp}.json", "w") as f:
         json.dump(test_metrics, f, indent=2)
+
     plot_confusion_matrix(
         np.array(test_metrics["confusion_matrix"]),
         label_encoder.classes_,
         timestamp
     )
+
     y_test_proba = final_model.predict_proba(X_test_processed)
     plot_roc_curve(y_test, y_test_proba, label_encoder, timestamp)
+
     feature_importance = final_model.get_feature_importance(top_k=20)
     print("\nTop 20 Feature Importances:")
     for feat, imp in feature_importance.items():
         print(f"{feat}: {imp:.4f}")
+
     with open(f"models/feature_importance_{timestamp}.json", "w") as f:
         json.dump(feature_importance, f, indent=2)
+
     print(f"\nTraining complete! Model saved with timestamp: {timestamp}")
 
 
