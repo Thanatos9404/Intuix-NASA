@@ -40,16 +40,19 @@ class ExoplanetModel:
         X_processed = self.preprocessor.transform(X)
         return self.model.predict_proba(X_processed)
 
-    def explain(self, X, top_k: int = 5) -> Dict:
+    def explain(self, X, top_k: int = 5) -> list:
         X_processed = self.preprocessor.transform(X)
         shap_values = self.explainer.shap_values(X_processed)
 
         if isinstance(shap_values, list):
-            shap_values = shap_values[1]
+            shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
 
         explanations = []
         for i in range(len(X)):
-            sample_shap = shap_values[i] if len(shap_values.shape) == 2 else shap_values[i, :, 1]
+            if len(shap_values.shape) == 2:
+                sample_shap = shap_values[i]
+            else:
+                sample_shap = shap_values[i, :, 1]
 
             importance_idx = np.argsort(np.abs(sample_shap))[-top_k:][::-1]
 

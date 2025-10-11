@@ -31,17 +31,13 @@ def get_model_metrics():
     return None
 
 
-def predict_single(features):
+def get_model_features():
     try:
-        response = requests.post(
-            f"{API_URL}/predict",
-            json={"features": features}
-        )
+        response = requests.get(f"{API_URL}/model/features")
         if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        st.error(f"Prediction failed: {e}")
-    return None
+            return response.json()["feature_names"]
+    except:
+        return []
 
 
 st.title("🌍 Exoplanet Detection System")
@@ -116,46 +112,109 @@ if page == "Overview":
 elif page == "Single Prediction":
     st.header("Single Sample Prediction")
 
+    if not check_api_health():
+        st.error("API is not running. Please start the API first.")
+        st.stop()
+
     st.info("Enter exoplanet candidate features for classification")
 
-    col1, col2 = st.columns(2)
+    # Get model features
+    model_features = get_model_features()
+
+    if not model_features:
+        st.error("Could not fetch model features. Is the model loaded?")
+        st.stop()
+
+    st.success(f"Model expects {len(model_features)} features")
+
+    # Show common input fields
+    st.subheader("Basic Features")
+    col1, col2, col3 = st.columns(3)
+
+    features = {}
 
     with col1:
-        period = st.number_input("Orbital Period (days)", value=10.0, min_value=0.0)
-        duration = st.number_input("Transit Duration (hours)", value=3.0, min_value=0.0)
-        depth = st.number_input("Transit Depth (ppm)", value=500.0, min_value=0.0)
+        features["koi_period"] = st.number_input("Orbital Period (days)", value=10.0, min_value=0.0)
+        features["koi_duration"] = st.number_input("Transit Duration (hours)", value=3.0, min_value=0.0)
 
     with col2:
-        radius = st.number_input("Planet Radius (Earth radii)", value=2.0, min_value=0.0)
-        impact = st.number_input("Impact Parameter", value=0.5, min_value=0.0, max_value=1.0)
-        snr = st.number_input("Signal-to-Noise Ratio", value=15.0, min_value=0.0)
+        features["koi_depth"] = st.number_input("Transit Depth (ppm)", value=500.0, min_value=0.0)
+        features["koi_prad"] = st.number_input("Planet Radius (Earth radii)", value=2.0, min_value=0.0)
 
-    if st.button("Predict", type="primary"):
-        features = {
-            "koi_period": period,
-            "koi_duration": duration,
-            "koi_depth": depth,
-            "koi_prad": radius,
-            "koi_impact": impact,
-            "koi_model_snr": snr,
-        }
+    with col3:
+        features["koi_impact"] = st.number_input("Impact Parameter", value=0.5, min_value=0.0, max_value=1.0)
+        features["koi_model_snr"] = st.number_input("Signal-to-Noise Ratio", value=15.0, min_value=0.0)
 
-        result = predict_single(features)
+    # Show advanced features in expander
+    with st.expander("⚙️ Advanced: Set Additional Features (Optional)"):
+        st.info("Leave as 0.0 if unknown. The model will handle missing features.")
 
-        if result:
-            st.success(f"Predicted Class: **{result['predicted_class']}**")
+        remaining_features = [f for f in model_features if f not in features]
 
-            st.subheader("Class Probabilities")
-            probs_df = pd.DataFrame(result["probabilities"].items(), columns=["Class", "Probability"])
-            st.bar_chart(probs_df.set_index("Class"))
+        if remaining_features:
+            cols = st.columns(3)
+            for idx, feat in enumerate(remaining_features[:30]):  # Limit to first 30
+                with cols[idx % 3]:
+                    features[feat] = st.number_input(
+                        feat,
+                        value=0.0,
+                        key=f"adv_{feat}",
+                        format="%.4f"
+                    )
 
-            st.subheader("Top Contributing Features (SHAP)")
-            shap_df = pd.DataFrame(result["top_features"].items(), columns=["Feature", "SHAP Value"])
-            st.dataframe(shap_df, use_container_width=True)
+    st.divider()
+
+    if st.button("🔮 Predict", type="primary", use_container_width=True):
+        with st.spinner("Analyzing exoplanet candidate..."):
+            try:
+                response = requests.post(
+                    f"{API_URL}/predict",
+                    json={"features": features},
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+
+                    st.success(f"### Predicted Class: **{result['predicted_class'].upper()}**")
+
+                    st.subheader("Class Probabilities")
+                    probs_df = pd.DataFrame(
+                        result["probabilities"].items(),
+                        columns=["Class", "Probability"]
+                    )
+                    probs_df["Probability"] = probs_df["Probability"] * 100
+
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    ax.barh(probs_df["Class"], probs_df["Probability"])
+                    ax.set_xlabel("Probability (%)")
+                    ax.set_title("Classification Probabilities")
+                    st.pyplot(fig)
+
+                    st.subheader("Top Contributing Features (SHAP)")
+                    shap_df = pd.DataFrame(
+                        result["top_features"].items(),
+                        columns=["Feature", "SHAP Value"]
+                    )
+                    shap_df = shap_df.sort_values("SHAP Value", key=abs, ascending=False)
+
+                    st.dataframe(shap_df, use_container_width=True, hide_index=True)
+
+                else:
+                    st.error(f"Prediction failed: {response.text}")
+
+            except requests.exceptions.Timeout:
+                st.error("Request timeout - API may be overloaded")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 
 
 elif page == "Batch Prediction":
     st.header("Batch CSV Prediction")
+
+    if not check_api_health():
+        st.error("API is not running. Please start the API first.")
+        st.stop()
 
     st.markdown("Upload a CSV file with exoplanet candidate features for batch classification.")
 
@@ -164,24 +223,28 @@ elif page == "Batch Prediction":
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         st.write("Preview:", df.head())
+        st.info(f"Uploaded {len(df)} rows with {len(df.columns)} columns")
 
         if st.button("Run Batch Prediction", type="primary"):
-            with st.spinner("Processing..."):
+            with st.spinner("Processing batch predictions..."):
                 try:
                     files = {"file": ("input.csv", uploaded_file.getvalue(), "text/csv")}
                     response = requests.post(f"{API_URL}/predict_batch", files=files)
 
                     if response.status_code == 200:
                         result_df = pd.read_csv(pd.io.common.BytesIO(response.content))
-                        st.success(f"Processed {len(result_df)} records")
+                        st.success(f"✓ Processed {len(result_df)} records")
+
+                        st.subheader("Results Preview")
                         st.dataframe(result_df.head(20))
 
                         csv = result_df.to_csv(index=False).encode()
                         st.download_button(
-                            "Download Results",
+                            "📥 Download Full Results",
                             csv,
                             "predictions.csv",
-                            "text/csv"
+                            "text/csv",
+                            use_container_width=True
                         )
                     else:
                         st.error(f"Prediction failed: {response.text}")
@@ -198,22 +261,22 @@ elif page == "Retrain Model":
 
     if retrain_file:
         df = pd.read_csv(retrain_file)
-        st.write(f"Uploaded: {len(df)} rows")
+        st.write(f"Uploaded: {len(df)} rows, {len(df.columns)} columns")
         st.write("Preview:", df.head())
 
         if len(df) > 50000:
-            st.error("Dataset exceeds 50,000 row limit")
+            st.error("❌ Dataset exceeds 50,000 row limit")
         elif "target" not in df.columns:
-            st.error("CSV must contain 'target' column with labels")
+            st.error("❌ CSV must contain 'target' column with labels")
         else:
-            st.info("Ready to retrain. This may take several minutes.")
+            st.success("✓ Dataset is valid and ready for training")
 
-            if st.button("🚀 Confirm and Retrain", type="primary"):
+            if st.button("🚀 Confirm and Retrain Model", type="primary"):
                 output_path = f"data/processed/retrain_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 Path("data/processed").mkdir(parents=True, exist_ok=True)
                 df.to_csv(output_path, index=False)
 
-                with st.spinner("Training in progress..."):
+                with st.spinner("Training in progress... This may take several minutes"):
                     try:
                         result = subprocess.run(
                             ["python", "src/train.py"],
@@ -224,13 +287,14 @@ elif page == "Retrain Model":
 
                         if result.returncode == 0:
                             st.success("✓ Retraining complete!")
-                            st.code(result.stdout)
+                            with st.expander("Training Log"):
+                                st.code(result.stdout)
 
-                            st.info("Restart API to load new model")
+                            st.info("🔄 Restart API to load new model: `uvicorn src.api:app --reload`")
                         else:
-                            st.error("Training failed")
+                            st.error("❌ Training failed")
                             st.code(result.stderr)
                     except subprocess.TimeoutExpired:
-                        st.error("Training timeout (10 min limit)")
+                        st.error("⏱️ Training timeout (10 min limit)")
                     except Exception as e:
                         st.error(f"Error: {e}")

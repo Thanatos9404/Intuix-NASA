@@ -6,8 +6,9 @@ import pandas as pd
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from pydantic import BaseModel
 import joblib
+import traceback
 
-from model import ExoplanetModel
+from src.model import ExoplanetModel
 
 app = FastAPI(title="Exoplanet Detection API", version="1.0.0")
 
@@ -43,7 +44,8 @@ async def startup_event():
     global model
     try:
         model = load_latest_model()
-        print("Model loaded successfully")
+        print(f"Model loaded successfully")
+        print(f"Model expects {len(model.feature_names)} features")
     except Exception as e:
         print(f"Warning: Could not load model: {e}")
 
@@ -51,6 +53,17 @@ async def startup_event():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "model_loaded": model is not None}
+
+
+@app.get("/model/features")
+async def get_model_features():
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    return {
+        "feature_names": model.feature_names,
+        "feature_count": len(model.feature_names)
+    }
 
 
 @app.get("/model/metrics")
@@ -78,8 +91,21 @@ async def predict_single(input_data: PredictionInput):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        df = pd.DataFrame([input_data.features])
+        print(f"\n=== Prediction Request ===")
+        print(f"Received {len(input_data.features)} features")
+        print(f"Model expects {len(model.feature_names)} features")
 
+        # Fill missing features with 0
+        complete_features = {}
+        for feat in model.feature_names:
+            complete_features[feat] = input_data.features.get(feat, 0.0)
+
+        print(f"Filled features to {len(complete_features)} total")
+
+        # Create DataFrame
+        df = pd.DataFrame([complete_features])
+
+        # Make prediction
         pred = model.predict(df)[0]
         proba = model.predict_proba(df)[0]
 
@@ -93,6 +119,8 @@ async def predict_single(input_data: PredictionInput):
         explanations = model.explain(df, top_k=5)
         top_features = explanations[0]
 
+        print(f"Prediction successful: {predicted_class}")
+
         return PredictionResponse(
             predicted_class=predicted_class,
             probabilities=probabilities,
@@ -100,7 +128,9 @@ async def predict_single(input_data: PredictionInput):
         )
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Prediction failed: {str(e)}")
+        error_detail = f"Prediction failed: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/predict_batch")
@@ -113,6 +143,11 @@ async def predict_batch(file: UploadFile = File(...)):
 
     try:
         df = pd.read_csv(file.file)
+
+        # Fill missing features with 0
+        for feat in model.feature_names:
+            if feat not in df.columns:
+                df[feat] = 0.0
 
         predictions = model.predict(df)
         probabilities = model.predict_proba(df)
